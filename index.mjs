@@ -2,10 +2,11 @@ import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import TelegramBot from "node-telegram-bot-api";
 import fs from "fs";
+import { createCursor } from "ghost-cursor";
 
 // ===== CONFIG (ใส่ค่าของคุณ) =====
-const TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"; // ⬅️ ⚠️ ใส่ Token ของคุณที่ได้จาก BotFather
-const ADMIN_CHAT_ID = "YOUR_ADMIN_CHAT_ID";    // ⬅️ ⚠️ ใส่ Chat ID ของคุณ
+const TELEGRAM_TOKEN = "8059700320:AAE3zoxq5Q-WyBfS5eeQTJtg7k3xacFw6I8"; // 🔑 Token จริงของบอท
+const ADMIN_CHAT_ID = "7905342409";    // 🆔 Chat ID ของผู้ดูแล
 const AI_API = "https://kaiz-apis.gleeze.com/api/deepseek-v3";
 const AI_KEY = "e62d60dd-8853-4233-bbcb-9466b4cbc265";
 
@@ -16,6 +17,7 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 let botState = {
     browser: null,
     page: null,
+    cursor: null,
     status: 'idle', // idle, awaiting_url, mission_active
 };
 
@@ -37,6 +39,7 @@ const missionActiveKeyboard = {
 
 // ===== Utils & Core Actions =====
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const humanPause = (min = 300, max = 1200) => delay(min + Math.random() * (max - min));
 
 async function sendSafePhoto(caption, filePath) {
     const cap = caption.length > 1020 ? caption.slice(0, 1020) + "..." : caption;
@@ -228,7 +231,7 @@ async function executePlan(page, instruction) {
         await bot.sendMessage(ADMIN_CHAT_ID, `✅ **แผนการทำงานที่ AI สร้างขึ้น:**\n${planText}`);
 
         for (const [index, step] of plan.entries()) {
-            await delay(1000);
+            await humanPause(800,1500);
             await handleCommonOverlays(page);
             await bot.sendMessage(ADMIN_CHAT_ID, `⏳ [${index+1}/${plan.length}] กำลังทำ: **${step.action}** "${step.hint || step.url || step.question || step.key}"...`);
 
@@ -255,7 +258,7 @@ async function executePlan(page, instruction) {
                     await bot.sendMessage(ADMIN_CHAT_ID, `✅ AI เลือกองค์ประกอบสำหรับ "${step.hint}" ได้แล้ว!`);
                     
                     await page.evaluate(el => el.scrollIntoView({ block: "center", behavior: "smooth" }), elementHandle);
-                    await delay(500);
+                    await humanPause(300,600);
                     await page.evaluate(el => {
                         el.style.transition = 'all 0.3s ease';
                         el.style.boxShadow = '0 0 15px 5px rgba(0, 191, 255, 0.9)';
@@ -263,11 +266,11 @@ async function executePlan(page, instruction) {
                         el.style.borderRadius = '8px';
                     }, elementHandle);
                     await screenshot(page, `กำลังจะ ${step.action} ที่: "${step.hint}"`);
-                    await delay(1500);
+                    await humanPause(1000,1700);
                     await page.evaluate(el => { el.style.boxShadow = ''; el.style.border = ''; el.style.borderRadius = ''; }, elementHandle);
 
                     if (step.action.toUpperCase() === "TYPE") {
-                        await elementHandle.focus();
+                        await botState.cursor.click(elementHandle);
                         const isContentEditable = await elementHandle.evaluate(el => el.isContentEditable);
                         if (isContentEditable) {
                             await elementHandle.evaluate(el => el.textContent = '');
@@ -275,15 +278,16 @@ async function executePlan(page, instruction) {
                             await elementHandle.click({ clickCount: 3 });
                             await page.keyboard.press('Backspace');
                         }
-                        await elementHandle.type(step.value, { delay: 80 });
+                        await botState.page.keyboard.type(step.value, { delay: 50 + Math.random()*100 });
                     } else {
-                        await elementHandle.click();
+                        await botState.cursor.click(elementHandle);
                     }
                     break;
 
                 case "GOTO":
                     if (!step.url || !/^https?:\/\//i.test(step.url)) throw new Error(`URL สำหรับ GOTO ไม่ถูกต้อง: "${step.url}"`);
                     await page.goto(step.url, { waitUntil: "domcontentloaded", timeout: 90000 });
+                    botState.cursor = createCursor(page);
                     break;
                 
                 case "READ":
@@ -319,7 +323,7 @@ async function endMission() {
     if (botState.browser) {
         await botState.browser.close().catch(e => console.error("Error closing browser:", e));
     }
-    botState = { browser: null, page: null, status: 'idle' };
+    botState = { browser: null, page: null, cursor: null, status: 'idle' };
     await bot.sendMessage(ADMIN_CHAT_ID, "ภารกิจสิ้นสุดแล้ว บอทพร้อมรับภารกิจใหม่", idleKeyboard);
 }
 
@@ -350,6 +354,7 @@ bot.on("message", async (msg) => {
                 botState.browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] });
                 botState.page = (await botState.browser.pages())[0] || await botState.browser.newPage();
                 await botState.page.setViewport({ width: 1366, height: 768 });
+                botState.cursor = createCursor(botState.page);
                 await botState.page.goto(text, { waitUntil: "domcontentloaded", timeout: 90000 });
                 await screenshot(botState.page, `📲 โหลดหน้าแรกสำเร็จ: ${text}`);
                 botState.status = 'mission_active';
