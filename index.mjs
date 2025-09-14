@@ -1,14 +1,26 @@
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import TelegramBot from "node-telegram-bot-api";
+import express from "express";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { createCursor } from "ghost-cursor";
 
 // ===== CONFIG (ใส่ค่าของคุณ) =====
 const TELEGRAM_TOKEN = "8059700320:AAE3zoxq5Q-WyBfS5eeQTJtg7k3xacFw6I8"; // 🔑 Token จริงของบอท
 const ADMIN_CHAT_ID = "7905342409";    // 🆔 Chat ID ของผู้ดูแล
-const AI_API = "https://kaiz-apis.gleeze.com/api/deepseek-v3";
+const AI_API = "https://kaiz-apis.gleeze.com/api/gemini-vision";
 const AI_KEY = "e62d60dd-8853-4233-bbcb-9466b4cbc265";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const IMG_DIR = path.join(__dirname, "public");
+if (!fs.existsSync(IMG_DIR)) fs.mkdirSync(IMG_DIR);
+
+const app = express();
+app.use(express.static(IMG_DIR));
+app.listen(4000, () => console.log("🖼 Image server on http://localhost:4000/"));
 
 puppeteer.use(StealthPlugin());
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
@@ -53,10 +65,16 @@ async function sendSafePhoto(caption, filePath) {
     }
 }
 
-async function screenshot(page, note = "📸") {
+async function capture(page) {
     const filename = `screen-${Date.now()}.png`;
-    await page.screenshot({ path: filename, fullPage: false });
-    await sendSafePhoto(note, filename);
+    const filePath = path.join(IMG_DIR, filename);
+    await page.screenshot({ path: filePath, fullPage: false });
+    return { filePath, url: `http://localhost:4000/${filename}` };
+}
+
+async function screenshot(page, note = "📸") {
+    const { filePath } = await capture(page);
+    await sendSafePhoto(note, filePath);
 }
 
 // ===== 🧠 [อัปเกรด!] ระบบ AI-Vision & Element Interaction =====
@@ -113,7 +131,9 @@ ${JSON.stringify(elementsJSON, null, 2)}
 Respond with ONLY the 'id' of the best matching element. For example: "pptr-gen-5". If no element is a clear match, respond with "null".`;
 
     try {
-        const response = await fetch(`${AI_API}?ask=${encodeURIComponent(prompt)}&uid=puppeteer-genius-pro&apikey=${AI_KEY}`);
+        const response = await fetch(
+            `${AI_API}?q=${encodeURIComponent(prompt)}&uid=puppeteer-genius-pro&imageUrl=&apikey=${AI_KEY}`
+        );
         if (!response.ok) return null;
         const data = await response.json();
         let choice = (data.response || "null").replace(/["'`]/g, "").trim();
@@ -128,29 +148,23 @@ Respond with ONLY the 'id' of the best matching element. For example: "pptr-gen-
  * ถาม AI ให้อ่านและสรุปข้อมูลจากหน้าเว็บ
  */
 async function askAIToReadContent(page, question) {
-    await bot.sendMessage(ADMIN_CHAT_ID, `🧠 AI กำลังอ่านเนื้อหาบนหน้าเว็บเพื่อหาคำตอบสำหรับ: "${question}"`);
-    const pageText = await page.evaluate(() => document.body.innerText);
-    
-    const context = pageText.length > 4000 ? pageText.substring(0, 4000) : pageText;
-
-    const prompt = `You are an information extraction expert. Based on the following text content from a webpage, please answer the user's question. If the answer is present in the text, provide it concisely. If the answer cannot be found in the provided text, respond with "I could not find the information on the page."
-
-Webpage Text:
----
-${context}
----
-
-User's Question: "${question}"
-
-Answer:`;
+    await bot.sendMessage(ADMIN_CHAT_ID, `🧠 AI กำลังวิเคราะห์ภาพเพื่อหาคำตอบสำหรับ: "${question}"`);
+    const { filePath, url } = await capture(page);
 
     try {
-        const response = await fetch(`${AI_API}?ask=${encodeURIComponent(prompt)}&uid=puppeteer-reader&apikey=${AI_KEY}`);
+        const params = new URLSearchParams({
+            q: question,
+            uid: "puppeteer-reader",
+            imageUrl: url,
+            apikey: AI_KEY
+        });
+        const response = await fetch(`${AI_API}?${params.toString()}`);
         if (!response.ok) throw new Error('API request failed');
         const data = await response.json();
+        await sendSafePhoto(`ภาพที่ใช้ถาม: ${question}`, filePath);
         return data.response || "ไม่พบข้อมูลที่เกี่ยวข้อง";
     } catch (e) {
-        console.error("AI Read failed:", e);
+        await sendSafePhoto(`เกิดข้อผิดพลาดในการถาม: ${question}`, filePath);
         return `เกิดข้อผิดพลาดในการดึงข้อมูล: ${e.message}`;
     }
 }
@@ -182,7 +196,9 @@ User: ${instruction}
 AI:`;
 
     try {
-        const response = await fetch(`${AI_API}?ask=${encodeURIComponent(prompt)}&uid=puppeteer-pro-planner&apikey=${AI_KEY}`);
+        const response = await fetch(
+            `${AI_API}?q=${encodeURIComponent(prompt)}&uid=puppeteer-pro-planner&imageUrl=&apikey=${AI_KEY}`
+        );
         if (!response.ok) throw new Error(`API error: ${response.status} ${response.statusText}`);
         const data = await response.json();
         const jsonMatch = (data.response || "").match(/\[\s*\{[\s\S]*\}\s*\]/);
