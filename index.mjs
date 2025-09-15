@@ -10,7 +10,7 @@ import { createCursor } from "ghost-cursor";
 // ===== CONFIG (ใส่ค่าของคุณ) =====
 const TELEGRAM_TOKEN = "8059700320:AAE3zoxq5Q-WyBfS5eeQTJtg7k3xacFw6I8"; // 🔑 Token จริงของบอท
 const ADMIN_CHAT_ID = "7905342409";    // 🆔 Chat ID ของผู้ดูแล
-const AI_API = "https://kaiz-apis.gleeze.com/api/deepseek-v3";
+const AI_API = "https://kaiz-apis.gleeze.com/api/gemini-vision"; // 🌐 Vision-enabled AI endpoint
 const AI_KEY = "e62d60dd-8853-4233-bbcb-9466b4cbc265";
 let USER_API_KEY = null; // คีย์สำหรับระบบหักโทเค็น
 
