@@ -10,8 +10,9 @@ import { createCursor } from "ghost-cursor";
 // ===== CONFIG (ใส่ค่าของคุณ) =====
 const TELEGRAM_TOKEN = "8059700320:AAE3zoxq5Q-WyBfS5eeQTJtg7k3xacFw6I8"; // 🔑 Token จริงของบอท
 const ADMIN_CHAT_ID = "7905342409";    // 🆔 Chat ID ของผู้ดูแล
-const AI_API = "https://kaiz-apis.gleeze.com/api/gemini-vision";
+const AI_API = "https://kaiz-apis.gleeze.com/api/deepseek-v3";
 const AI_KEY = "e62d60dd-8853-4233-bbcb-9466b4cbc265";
+let USER_API_KEY = null; // คีย์สำหรับระบบหักโทเค็น
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,15 +31,17 @@ let botState = {
     browser: null,
     page: null,
     cursor: null,
-    status: 'idle', // idle, awaiting_url, mission_active
+    status: 'idle', // idle, awaiting_url, mission_active, awaiting_key
 };
 
 // ===== Keyboards =====
-const idleKeyboard = {
+const MAIN_MENU = {
     reply_markup: {
-        keyboard: [[{ text: "🚀 เริ่มภารกิจใหม่" }]],
-        resize_keyboard: true,
-        one_time_keyboard: true
+        keyboard: [
+            [{ text: "เข้าเว็บเริ่มภารกิจ⚙️⛔" }],
+            [{ text: "🔑 ใส่คีย์" }, { text: "💳 เช็คโทเค็น" }]
+        ],
+        resize_keyboard: true
     }
 };
 const missionActiveKeyboard = {
@@ -75,6 +78,37 @@ async function capture(page) {
 async function screenshot(page, note = "📸") {
     const { filePath } = await capture(page);
     await sendSafePhoto(note, filePath);
+}
+
+async function checkTokens() {
+    if (!USER_API_KEY) {
+        await bot.sendMessage(ADMIN_CHAT_ID, "❗️ กรุณาใส่คีย์ก่อน");
+        return;
+    }
+    try {
+        const res = await fetch(`https://apikey-vip.netlify.app/api/wepf/credit?key=${encodeURIComponent(USER_API_KEY)}`);
+        const data = await res.json();
+        if (data.ok) {
+            await bot.sendMessage(ADMIN_CHAT_ID, `💳 คงเหลือ ${data.tokens_remaining} โทเค็น (สถานะ: ${data.status})`);
+        } else {
+            await bot.sendMessage(ADMIN_CHAT_ID, `❌ ตรวจสอบคีย์ไม่สำเร็จ: ${data.error || 'unknown error'}`);
+        }
+    } catch (err) {
+        await bot.sendMessage(ADMIN_CHAT_ID, `❌ เชื่อมต่อ API ล้มเหลว: ${err.message}`);
+    }
+}
+
+async function useTokens(count) {
+    if (!USER_API_KEY) return;
+    try {
+        await fetch("https://apikey-vip.netlify.app/api/wepf/use", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: USER_API_KEY, tokens: count })
+        });
+    } catch (err) {
+        console.error("Token deduction failed:", err.message);
+    }
 }
 
 // ===== 🧠 [อัปเกรด!] ระบบ AI-Vision & Element Interaction =====
@@ -323,6 +357,7 @@ async function executePlan(page, instruction) {
                 console.log("Network idle timeout, continuing anyway.");
             });
         }
+        await useTokens(3);
         return true;
     } catch (e) {
         await bot.sendMessage(ADMIN_CHAT_ID, `❌ เกิดข้อผิดพลาดร้ายแรงระหว่างทำงาน:\n\`\`\`\n${e.message}\n\`\`\``, { parse_mode: 'Markdown' });
@@ -340,7 +375,7 @@ async function endMission() {
         await botState.browser.close().catch(e => console.error("Error closing browser:", e));
     }
     botState = { browser: null, page: null, cursor: null, status: 'idle' };
-    await bot.sendMessage(ADMIN_CHAT_ID, "ภารกิจสิ้นสุดแล้ว บอทพร้อมรับภารกิจใหม่", idleKeyboard);
+    await bot.sendMessage(ADMIN_CHAT_ID, "ภารกิจสิ้นสุดแล้ว บอทพร้อมรับภารกิจใหม่", MAIN_MENU);
 }
 
 bot.on("message", async (msg) => {
@@ -352,10 +387,19 @@ bot.on("message", async (msg) => {
         await endMission();
         return;
     }
-    if (text === "🚀 เริ่มภารกิจใหม่") {
+    if (text === "เข้าเว็บเริ่มภารกิจ⚙️⛔") {
         if (botState.status !== 'idle') await endMission();
         botState.status = 'awaiting_url';
         await bot.sendMessage(chatId, "📌 กรุณาส่ง URL **เริ่มต้น** ของเว็บที่ต้องการทำงาน:");
+        return;
+    }
+    if (text === "🔑 ใส่คีย์") {
+        botState.status = 'awaiting_key';
+        await bot.sendMessage(chatId, "🔑 กรุณาส่งคีย์ของคุณ:");
+        return;
+    }
+    if (text === "💳 เช็คโทเค็น") {
+        await checkTokens();
         return;
     }
 
@@ -392,17 +436,30 @@ bot.on("message", async (msg) => {
             }
             break;
 
+        case 'awaiting_key':
+            USER_API_KEY = text;
+            botState.status = 'idle';
+            await bot.sendMessage(chatId, "✅ บันทึกคีย์เรียบร้อย", MAIN_MENU);
+            break;
+
         default:
-            await bot.sendMessage(chatId, "สวัสดีครับ! กรุณากด '🚀 เริ่มภารกิจใหม่' เพื่อเริ่มต้น", idleKeyboard);
+            await bot.sendMessage(chatId, "สวัสดีครับ! เลือกเมนูด้านล่างเพื่อเริ่มต้น", MAIN_MENU);
             break;
     }
 });
 
 
 console.log("🤖 Telegram Bot v5.2 (Genesis Pro Plus) is running...");
-bot.sendMessage(ADMIN_CHAT_ID, "✅ บอท (v5.2 Genesis Pro Plus) รีสตาร์ทและพร้อมทำงานแล้ว!", idleKeyboard).catch(err => {
+bot.sendMessage(ADMIN_CHAT_ID, "✅ บอท (v5.2 Genesis Pro Plus) รีสตาร์ทและพร้อมทำงานแล้ว!", MAIN_MENU).catch(err => {
     console.error("❌ เกิดข้อผิดพลาดร้ายแรงในการส่งข้อความเริ่มต้น!");
     console.error("กรุณาตรวจสอบว่า TELEGRAM_TOKEN และ ADMIN_CHAT_ID ในไฟล์โค้ดถูกต้องหรือไม่");
     console.error("Error Details:", err.response?.body || err.message);
 });
+
+const stopBot = (signal) => {
+    if (typeof bot.stop === 'function') bot.stop(signal);
+    else if (typeof bot.stopPolling === 'function') bot.stopPolling();
+};
+process.once('SIGINT', () => stopBot('SIGINT'));
+process.once('SIGTERM', () => stopBot('SIGTERM'));
 
