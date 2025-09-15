@@ -98,16 +98,45 @@ async function checkTokens() {
     }
 }
 
-async function useTokens(count) {
+async function ensureTokens() {
+    if (!USER_API_KEY) {
+        await bot.sendMessage(ADMIN_CHAT_ID, "❗️ กรุณาใส่คีย์ก่อนใช้งาน");
+        return false;
+    }
+    try {
+        const res = await fetch(`https://apikey-vip.netlify.app/api/wepf/credit?key=${encodeURIComponent(USER_API_KEY)}`);
+        const data = await res.json();
+        if (!data.ok) {
+            await bot.sendMessage(ADMIN_CHAT_ID, `❌ ตรวจสอบคีย์ไม่สำเร็จ: ${data.error || 'unknown error'}`);
+            return false;
+        }
+        if (data.tokens_remaining <= 0 || data.status !== 'active') {
+            await bot.sendMessage(ADMIN_CHAT_ID, "⛔️ โทเค็นหมดหรือคีย์ไม่พร้อมใช้งาน กรุณาเปลี่ยนคีย์");
+            return false;
+        }
+        return true;
+    } catch (err) {
+        await bot.sendMessage(ADMIN_CHAT_ID, `❌ เชื่อมต่อ API ล้มเหลว: ${err.message}`);
+        return false;
+    }
+}
+
+async function useTokens(count = 1) {
     if (!USER_API_KEY) return;
     try {
-        await fetch("https://apikey-vip.netlify.app/api/wepf/use", {
+        const res = await fetch("https://apikey-vip.netlify.app/api/wepf/use", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ key: USER_API_KEY, tokens: count })
         });
+        const data = await res.json();
+        if (data.ok) {
+            await bot.sendMessage(ADMIN_CHAT_ID, `🔋 หัก ${count} โทเค็น (คงเหลือ ${data.tokens_remaining})`);
+        } else {
+            await bot.sendMessage(ADMIN_CHAT_ID, `❌ หักโทเค็นไม่สำเร็จ: ${data.error || 'unknown error'}`);
+        }
     } catch (err) {
-        console.error("Token deduction failed:", err.message);
+        await bot.sendMessage(ADMIN_CHAT_ID, `❌ เชื่อมต่อ API หักโทเค็นล้มเหลว: ${err.message}`);
     }
 }
 
@@ -269,6 +298,7 @@ async function handleCommonOverlays(page) {
 }
 
 async function executePlan(page, instruction) {
+    if (!(await ensureTokens())) return false;
     try {
         await bot.sendMessage(ADMIN_CHAT_ID, "🧠 กำลังวิเคราะห์คำสั่งและสร้างแผนการทำงาน...");
         const plan = await getAIPlan(instruction);
@@ -357,7 +387,7 @@ async function executePlan(page, instruction) {
                 console.log("Network idle timeout, continuing anyway.");
             });
         }
-        await useTokens(3);
+        await useTokens(1);
         return true;
     } catch (e) {
         await bot.sendMessage(ADMIN_CHAT_ID, `❌ เกิดข้อผิดพลาดร้ายแรงระหว่างทำงาน:\n\`\`\`\n${e.message}\n\`\`\``, { parse_mode: 'Markdown' });
@@ -388,6 +418,7 @@ bot.on("message", async (msg) => {
         return;
     }
     if (text === "เข้าเว็บเริ่มภารกิจ⚙️⛔") {
+        if (!(await ensureTokens())) return;
         if (botState.status !== 'idle') await endMission();
         botState.status = 'awaiting_url';
         await bot.sendMessage(chatId, "📌 กรุณาส่ง URL **เริ่มต้น** ของเว็บที่ต้องการทำงาน:");
@@ -409,6 +440,10 @@ bot.on("message", async (msg) => {
                 await bot.sendMessage(chatId, "URL ไม่ถูกต้อง กรุณาส่ง URL ที่ขึ้นต้นด้วย http:// หรือ https://");
                 return;
             }
+            if (!(await ensureTokens())) {
+                botState.status = 'idle';
+                return;
+            }
             try {
                 await bot.sendMessage(chatId, "🚀 กำลังเปิดเบราว์เซอร์และไปที่ URL แรก...");
                 botState.browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"] });
@@ -426,6 +461,7 @@ bot.on("message", async (msg) => {
             break;
 
         case 'mission_active':
+            if (!(await ensureTokens())) return;
             const success = await executePlan(botState.page, text);
             if (success) {
                 await screenshot(botState.page, "🎉 ทำงานล่าสุดเสร็จสิ้น");
@@ -438,8 +474,13 @@ bot.on("message", async (msg) => {
 
         case 'awaiting_key':
             USER_API_KEY = text;
-            botState.status = 'idle';
-            await bot.sendMessage(chatId, "✅ บันทึกคีย์เรียบร้อย", MAIN_MENU);
+            if (await ensureTokens()) {
+                botState.status = 'idle';
+                await bot.sendMessage(chatId, "✅ บันทึกคีย์เรียบร้อย", MAIN_MENU);
+            } else {
+                USER_API_KEY = null;
+                botState.status = 'idle';
+            }
             break;
 
         default:
