@@ -10,8 +10,8 @@ const API_BASE = 'https://apikey-vip.netlify.app/api/apisms1';
 const MAIN_MENU = {
     reply_markup: {
         keyboard: [
-            [{ text: 'ยิงเบอร์' }],
-            [{ text: '🔑 ใส่คีย์' }, { text: '💳 เช็คโทเค็น' }],
+            [{ text: '🚀 ยิงเบอร์' }],
+            [{ text: '🔐 ใส่คีย์' }, { text: '🧮 เช็คโทเค็น' }],
         ],
         resize_keyboard: true,
     },
@@ -70,17 +70,68 @@ function formatAxiosError(error) {
     return localizeApiMessage(error.message) || error.message || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ';
 }
 
-function extractRemainingTokens(data) {
+function extractRemainingTokens(data, seen = new Set()) {
     if (!data || typeof data !== 'object') {
         return null;
     }
-    const possibleKeys = ['remaining', 'balance', 'credit', 'credits', 'tokens', 'token'];
+
+    if (seen.has(data)) {
+        return null;
+    }
+    seen.add(data);
+
+    const possibleKeys = [
+        'remaining',
+        'balance',
+        'credit',
+        'credits',
+        'tokens',
+        'token',
+        'quota',
+    ];
+
     for (const key of possibleKeys) {
-        if (data[key] !== undefined) {
-            return data[key];
+        if (Object.prototype.hasOwnProperty.call(data, key)) {
+            const value = data[key];
+            if (value === null || value === undefined) {
+                continue;
+            }
+            if (typeof value === 'number') {
+                return value;
+            }
+            if (typeof value === 'string' && value.trim() !== '') {
+                const parsed = Number.parseFloat(value);
+                return Number.isFinite(parsed) ? parsed : value.trim();
+            }
         }
     }
+
+    for (const value of Object.values(data)) {
+        if (value && typeof value === 'object') {
+            const nested = extractRemainingTokens(value, seen);
+            if (nested !== null) {
+                return nested;
+            }
+        }
+    }
+
     return null;
+}
+
+function formatTokenSummary({ title, lead, remaining, fallbackNote }) {
+    const lines = [];
+    if (title) {
+        lines.push(title);
+    }
+    if (lead) {
+        lines.push(`📝 ${lead}`);
+    }
+    if (remaining !== null && remaining !== undefined) {
+        lines.push(`💳 โทเค็นคงเหลือ: ${remaining}`);
+    } else if (fallbackNote) {
+        lines.push(`⚠️ ${fallbackNote}`);
+    }
+    return lines.join('\n');
 }
 
 async function useTokens(apiKey, tokens) {
@@ -149,49 +200,56 @@ bot.start((ctx) => {
     const session = getSession(ctx);
     session.step = null;
     session.pendingPhone = null;
-    return ctx.reply('ยินดีต้อนรับ! เลือกเมนูที่ต้องการใช้งานได้เลย', MAIN_MENU);
+    const name = ctx.from?.first_name || ctx.from?.username || 'เพื่อนรัก';
+    return ctx.reply(
+        `🤖 สวัสดี ${name}!\n` +
+            'เลือกเมนูด้านล่างเพื่อเริ่มใช้งานได้เลย ✨',
+        MAIN_MENU
+    );
 });
 
-bot.hears('🔑 ใส่คีย์', (ctx) => {
+bot.hears(['🔐 ใส่คีย์', 'ใส่คีย์'], (ctx) => {
     const session = getSession(ctx);
     session.step = 'awaiting_key';
     session.pendingPhone = null;
-    return ctx.reply('กรุณาส่งคีย์ API ของคุณ');
+    return ctx.reply('🔐 กรุณาส่ง API Key ของคุณ (เก็บไว้เป็นความลับนะ)');
 });
 
-bot.hears('💳 เช็คโทเค็น', async (ctx) => {
+bot.hears(['🧮 เช็คโทเค็น', 'เช็คโทเค็น', 'เช็คเครดิต'], async (ctx) => {
     const session = getSession(ctx);
     if (!session.apiKey) {
-        return ctx.reply('ยังไม่ได้ตั้งค่า API Key กรุณากด "🔑 ใส่คีย์" ก่อน');
+        return ctx.reply('⚠️ ยังไม่ได้ตั้งค่า API Key กรุณากด "🔐 ใส่คีย์" ก่อน');
     }
 
     try {
+        await ctx.reply('🔍 กำลังตรวจสอบโทเค็นให้คุณ...');
         const credit = await checkCredit(session.apiKey);
         const remaining = extractRemainingTokens(credit);
-        let message = 'ข้อมูลโทเค็น:';
-        if (credit && credit.message) {
-            message = localizeApiMessage(credit.message) || credit.message;
-        }
-        if (remaining !== null) {
-            message += `\nโทเค็นคงเหลือ: ${remaining}`;
-        }
-        await ctx.reply(message, MAIN_MENU);
+        const summary = formatTokenSummary({
+            title: '📊 สถานะโทเค็น',
+            lead:
+                (credit && localizeApiMessage(credit.message)) ||
+                'ตรวจสอบโทเค็นสำเร็จ!',
+            remaining,
+            fallbackNote: 'ระบบต้นทางไม่ส่งยอดคงเหลือกลับมา',
+        });
+        await ctx.reply(summary, MAIN_MENU);
     } catch (error) {
-        await ctx.reply(`ตรวจสอบโทเค็นไม่สำเร็จ: ${error.message}`);
+        await ctx.reply(`❌ ตรวจสอบโทเค็นไม่สำเร็จ: ${error.message}`);
     }
 });
 
-bot.hears('ยิงเบอร์', (ctx) => {
+bot.hears(['🚀 ยิงเบอร์', 'ยิงเบอร์'], (ctx) => {
     const session = getSession(ctx);
     if (session.activeJob) {
-        return ctx.reply('ระบบกำลังยิงเบอร์อยู่ กรุณารอให้เสร็จก่อน');
+        return ctx.reply('⌛ ระบบกำลังยิงเบอร์อยู่ กรุณารอให้เสร็จก่อนนะ');
     }
     if (!session.apiKey) {
-        return ctx.reply('ยังไม่ได้ตั้งค่า API Key กรุณากด "🔑 ใส่คีย์" ก่อน');
+        return ctx.reply('⚠️ ยังไม่ได้ตั้งค่า API Key กรุณากด "🔐 ใส่คีย์" ก่อน');
     }
     session.step = 'awaiting_phone';
     session.pendingPhone = null;
-    return ctx.reply('กรุณาส่งเบอร์ที่จะยิง (ตัวเลขเท่านั้น)');
+    return ctx.reply('📱 กรุณาส่งเบอร์ที่จะยิง (เฉพาะตัวเลขเท่านั้น)');
 });
 
 bot.on('text', async (ctx) => {
@@ -207,56 +265,72 @@ bot.on('text', async (ctx) => {
             session.apiKey = text;
             session.step = null;
             session.pendingPhone = null;
-            await ctx.reply('บันทึก API Key เรียบร้อยแล้ว', MAIN_MENU);
+            await ctx.reply('✅ บันทึก API Key เรียบร้อยแล้ว! พร้อมใช้งานทันที 🚀', MAIN_MENU);
             return;
         }
         case 'awaiting_phone': {
             const sanitized = sanitizePhoneNumber(text);
             if (!sanitized || sanitized.length < 8 || sanitized.length > 12) {
-                await ctx.reply('รูปแบบเบอร์ไม่ถูกต้อง กรุณาลองอีกครั้ง');
+                await ctx.reply('⚠️ รูปแบบเบอร์ไม่ถูกต้อง กรุณาลองอีกครั้งด้วยตัวเลข 8-12 หลัก');
                 return;
             }
             session.pendingPhone = sanitized;
             session.step = 'awaiting_count';
-            await ctx.reply('ต้องการยิงจำนวนกี่ครั้ง (1-10)');
+            await ctx.reply('🎯 ต้องการยิงจำนวนกี่ครั้ง (1-10)');
             return;
         }
         case 'awaiting_count': {
             const count = Number.parseInt(text, 10);
             if (!Number.isInteger(count) || count < 1 || count > 10) {
-                await ctx.reply('กรุณาระบุจำนวนเป็นตัวเลข 1-10');
+                await ctx.reply('⚠️ กรุณาระบุจำนวนเป็นตัวเลข 1-10');
                 return;
             }
 
             try {
-                await ctx.reply('กำลังหักโทเค็น...');
+                await ctx.reply('🪙 กำลังหักโทเค็น...');
                 const response = await useTokens(session.apiKey, count);
-                const remaining = extractRemainingTokens(response);
-                let message = 'หักโทเค็นสำเร็จ';
-                if (response && response.message) {
-                    message = localizeApiMessage(response.message) || response.message;
+                let remaining = extractRemainingTokens(response);
+                let leadMessage =
+                    (response && localizeApiMessage(response.message)) ||
+                    'หักโทเค็นสำเร็จ!';
+
+                if (remaining === null) {
+                    try {
+                        const latestCredit = await checkCredit(session.apiKey);
+                        remaining = extractRemainingTokens(latestCredit);
+                        if (!response?.message && latestCredit?.message) {
+                            leadMessage =
+                                localizeApiMessage(latestCredit.message) || leadMessage;
+                        }
+                    } catch (refreshError) {
+                        console.error('Failed to refresh credit after deduction', refreshError);
+                    }
                 }
-                if (remaining !== null) {
-                    message += `\nโทเค็นคงเหลือ: ${remaining}`;
-                }
-                await ctx.reply(message);
+
+                const summary = formatTokenSummary({
+                    title: '✅ หักโทเค็นสำเร็จ',
+                    lead: leadMessage,
+                    remaining,
+                    fallbackNote: 'ไม่พบยอดคงเหลือหลังการหักโทเค็น',
+                });
+                await ctx.reply(summary);
 
                 const phone = session.pendingPhone;
                 session.step = null;
                 session.pendingPhone = null;
                 session.activeJob = true;
 
-                await ctx.reply(`เริ่มยิงเบอร์ ${phone} จำนวน ${count} ครั้ง`);
+                await ctx.reply(`🔥 เริ่มยิงเบอร์ ${phone} จำนวน ${count} ครั้ง`);
                 try {
                     await runSmsBomb(phone, count);
-                    await ctx.reply('ยิงเบอร์สำเร็จเรียบร้อยแล้ว', MAIN_MENU);
+                    await ctx.reply('🎉 ยิงเบอร์สำเร็จเรียบร้อยแล้ว!', MAIN_MENU);
                 } catch (error) {
-                    await ctx.reply(`เกิดข้อผิดพลาดระหว่างยิงเบอร์: ${error.message}`);
+                    await ctx.reply(`❌ เกิดข้อผิดพลาดระหว่างยิงเบอร์: ${error.message}`);
                 } finally {
                     session.activeJob = false;
                 }
             } catch (error) {
-                await ctx.reply(`หักโทเค็นไม่สำเร็จ: ${error.message}`);
+                await ctx.reply(`❌ หักโทเค็นไม่สำเร็จ: ${error.message}`);
             }
             return;
         }
@@ -268,7 +342,7 @@ bot.on('text', async (ctx) => {
         return;
     }
 
-    await ctx.reply('ไม่เข้าใจคำสั่ง กรุณาเลือกจากเมนู', MAIN_MENU);
+    await ctx.reply('🤔 ไม่เข้าใจคำสั่ง กรุณาเลือกจากเมนูด้านล่าง', MAIN_MENU);
 });
 
 bot.catch((err, ctx) => {
