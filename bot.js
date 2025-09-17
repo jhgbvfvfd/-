@@ -33,24 +33,41 @@ function getSession(ctx) {
     return sessions.get(id);
 }
 
+function localizeApiMessage(message) {
+    if (!message) {
+        return null;
+    }
+
+    const text = typeof message === 'string' ? message : JSON.stringify(message);
+    const normalized = text.trim();
+    const lower = normalized.toLowerCase();
+
+    if (lower.includes('platform is disabled')) {
+        return 'ระบบจัดการโทเค็นของผู้ให้บริการถูกปิดใช้งานชั่วคราว กรุณาลองใหม่ภายหลัง';
+    }
+
+    return normalized;
+}
+
 function formatAxiosError(error) {
     if (error.response && error.response.data) {
         const data = error.response.data;
         if (typeof data === 'string') {
-            return data;
+            return localizeApiMessage(data) || data;
         }
         if (data.message) {
-            return data.message;
+            return localizeApiMessage(data.message) || data.message;
         }
         if (data.error) {
-            return data.error;
+            return localizeApiMessage(data.error) || data.error;
         }
-        return JSON.stringify(data);
+        const serialized = JSON.stringify(data);
+        return localizeApiMessage(serialized) || serialized;
     }
     if (error.request) {
         return 'ไม่สามารถติดต่อเซิร์ฟเวอร์โทเค็นได้';
     }
-    return error.message || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ';
+    return localizeApiMessage(error.message) || error.message || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ';
 }
 
 function extractRemainingTokens(data) {
@@ -153,7 +170,7 @@ bot.hears('💳 เช็คโทเค็น', async (ctx) => {
         const remaining = extractRemainingTokens(credit);
         let message = 'ข้อมูลโทเค็น:';
         if (credit && credit.message) {
-            message = credit.message;
+            message = localizeApiMessage(credit.message) || credit.message;
         }
         if (remaining !== null) {
             message += `\nโทเค็นคงเหลือ: ${remaining}`;
@@ -217,7 +234,7 @@ bot.on('text', async (ctx) => {
                 const remaining = extractRemainingTokens(response);
                 let message = 'หักโทเค็นสำเร็จ';
                 if (response && response.message) {
-                    message = response.message;
+                    message = localizeApiMessage(response.message) || response.message;
                 }
                 if (remaining !== null) {
                     message += `\nโทเค็นคงเหลือ: ${remaining}`;
