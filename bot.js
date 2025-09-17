@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const axios = require('axios');
@@ -6,6 +7,78 @@ const { Telegraf } = require('telegraf');
 const BOT_TOKEN = '8252745688:AAES1pAHGqYQMq32N8invkUNp8VC_rrCKZo';
 
 const API_BASE = 'https://apikey-vip.netlify.app/api/apisms1';
+const DATA_DIR = path.join(__dirname, 'data');
+const STORAGE_FILE = path.join(DATA_DIR, 'keys.json');
+
+function ensureDataDir() {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+}
+
+function loadStorage() {
+    ensureDataDir();
+    try {
+        const raw = fs.readFileSync(STORAGE_FILE, 'utf-8');
+        const parsed = JSON.parse(raw);
+        return {
+            users: parsed.users || {},
+            keys: parsed.keys || {},
+        };
+    } catch (error) {
+        return { users: {}, keys: {} };
+    }
+}
+
+const storage = loadStorage();
+
+function persistStorage() {
+    ensureDataDir();
+    fs.writeFileSync(
+        STORAGE_FILE,
+        JSON.stringify(storage, null, 2),
+        'utf-8'
+    );
+}
+
+function getStoredKey(userId) {
+    return storage.users[userId]?.apiKey || null;
+}
+
+function assignKeyToUser(userId, key, profile = {}) {
+    const trimmedKey = key.trim();
+    if (!trimmedKey) {
+        throw new Error('กรุณาส่งคีย์ที่ถูกต้อง (ไม่ใช่ค่าว่าง)');
+    }
+
+    const owner = storage.keys[trimmedKey];
+    if (owner && owner !== userId) {
+        return { status: 'conflict', owner };
+    }
+
+    const currentKey = storage.users[userId]?.apiKey || null;
+
+    if (currentKey && currentKey !== trimmedKey) {
+        delete storage.keys[currentKey];
+    }
+
+    const timestamp = new Date().toISOString();
+
+    storage.users[userId] = {
+        apiKey: trimmedKey,
+        profile,
+        updatedAt: timestamp,
+    };
+    storage.keys[trimmedKey] = userId;
+
+    persistStorage();
+
+    if (currentKey === trimmedKey) {
+        return { status: 'unchanged' };
+    }
+
+    return { status: currentKey ? 'updated' : 'created' };
+}
 
 const MAIN_MENU = {
     reply_markup: {
@@ -24,7 +97,7 @@ function getSession(ctx) {
     const id = ctx.from.id;
     if (!sessions.has(id)) {
         sessions.set(id, {
-            apiKey: null,
+            apiKey: getStoredKey(id),
             step: null,
             pendingPhone: null,
             activeJob: false,
@@ -87,6 +160,9 @@ function extractRemainingTokens(data, seen = new Set()) {
         'credits',
         'tokens',
         'token',
+        'tokens_remaining',
+        'remaining_tokens',
+        'token_balance',
         'quota',
     ];
 
@@ -127,7 +203,11 @@ function formatTokenSummary({ title, lead, remaining, fallbackNote }) {
         lines.push(`📝 ${lead}`);
     }
     if (remaining !== null && remaining !== undefined) {
-        lines.push(`💳 โทเค็นคงเหลือ: ${remaining}`);
+        const formatted =
+            typeof remaining === 'number'
+                ? remaining.toLocaleString('th-TH')
+                : remaining;
+        lines.push(`💳 โทเค็นคงเหลือ: ${formatted}`);
     } else if (fallbackNote) {
         lines.push(`⚠️ ${fallbackNote}`);
     }
@@ -141,7 +221,7 @@ async function useTokens(apiKey, tokens) {
             { key: apiKey, tokens },
             { headers: { 'Content-Type': 'application/json' } }
         );
-        if (data && data.success === false) {
+        if (data && (data.success === false || data.ok === false)) {
             throw new Error(data.message || 'ไม่สามารถหักโทเค็นได้');
         }
         return data;
@@ -155,7 +235,7 @@ async function checkCredit(apiKey) {
         const { data } = await axios.get(`${API_BASE}/credit`, {
             params: { key: apiKey },
         });
-        if (data && data.success === false) {
+        if (data && (data.success === false || data.ok === false)) {
             throw new Error(data.message || 'ไม่สามารถตรวจสอบโทเค็นได้');
         }
         return data;
@@ -198,6 +278,7 @@ function runSmsBomb(phone, count) {
 
 bot.start((ctx) => {
     const session = getSession(ctx);
+    session.apiKey = getStoredKey(ctx.from.id) || session.apiKey;
     session.step = null;
     session.pendingPhone = null;
     const name = ctx.from?.first_name || ctx.from?.username || 'เพื่อนรัก';
@@ -217,6 +298,9 @@ bot.hears(['🔐 ใส่คีย์', 'ใส่คีย์'], (ctx) => {
 
 bot.hears(['🧮 เช็คโทเค็น', 'เช็คโทเค็น', 'เช็คเครดิต'], async (ctx) => {
     const session = getSession(ctx);
+    if (!session.apiKey) {
+        session.apiKey = getStoredKey(ctx.from.id);
+    }
     if (!session.apiKey) {
         return ctx.reply('⚠️ ยังไม่ได้ตั้งค่า API Key กรุณากด "🔐 ใส่คีย์" ก่อน');
     }
@@ -245,6 +329,9 @@ bot.hears(['🚀 ยิงเบอร์', 'ยิงเบอร์'], (ctx) =
         return ctx.reply('⌛ ระบบกำลังยิงเบอร์อยู่ กรุณารอให้เสร็จก่อนนะ');
     }
     if (!session.apiKey) {
+        session.apiKey = getStoredKey(ctx.from.id);
+    }
+    if (!session.apiKey) {
         return ctx.reply('⚠️ ยังไม่ได้ตั้งค่า API Key กรุณากด "🔐 ใส่คีย์" ก่อน');
     }
     session.step = 'awaiting_phone';
@@ -262,10 +349,34 @@ bot.on('text', async (ctx) => {
 
     switch (session.step) {
         case 'awaiting_key': {
-            session.apiKey = text;
-            session.step = null;
-            session.pendingPhone = null;
-            await ctx.reply('✅ บันทึก API Key เรียบร้อยแล้ว! พร้อมใช้งานทันที 🚀', MAIN_MENU);
+            try {
+                const result = assignKeyToUser(ctx.from.id, text, {
+                    firstName: ctx.from?.first_name || null,
+                    username: ctx.from?.username || null,
+                });
+                if (result.status === 'conflict') {
+                    await ctx.reply(
+                        '⛔ คีย์นี้ถูกใช้งานโดยบัญชีอื่นแล้ว กรุณาตรวจสอบอีกครั้ง',
+                        MAIN_MENU
+                    );
+                    return;
+                }
+
+                session.apiKey = getStoredKey(ctx.from.id);
+                session.step = null;
+                session.pendingPhone = null;
+
+                const statusMessage =
+                    result.status === 'updated'
+                        ? '🔄 อัปเดต API Key ใหม่เรียบร้อย! พร้อมใช้งานทันที 🚀'
+                        : result.status === 'unchanged'
+                        ? 'ℹ️ คีย์นี้มีอยู่แล้ว พร้อมใช้งานต่อได้เลย ✅'
+                        : '✅ บันทึก API Key เรียบร้อยแล้ว! พร้อมใช้งานทันที 🚀';
+
+                await ctx.reply(statusMessage, MAIN_MENU);
+            } catch (error) {
+                await ctx.reply(`❌ ไม่สามารถบันทึกคีย์ได้: ${error.message}`);
+            }
             return;
         }
         case 'awaiting_phone': {
@@ -313,7 +424,7 @@ bot.on('text', async (ctx) => {
                     remaining,
                     fallbackNote: 'ไม่พบยอดคงเหลือหลังการหักโทเค็น',
                 });
-                await ctx.reply(summary);
+                await ctx.reply(summary, MAIN_MENU);
 
                 const phone = session.pendingPhone;
                 session.step = null;
@@ -342,7 +453,7 @@ bot.on('text', async (ctx) => {
         return;
     }
 
-    await ctx.reply('🤔 ไม่เข้าใจคำสั่ง กรุณาเลือกจากเมนูด้านล่าง', MAIN_MENU);
+    return;
 });
 
 bot.catch((err, ctx) => {
